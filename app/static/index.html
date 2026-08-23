@@ -246,8 +246,7 @@ $("btnSaveGeom").onclick = async () => {
   await loadConfig();
   refreshImages();
   alert(["Saved. If you changed the corners or px_per_mm, rebuild the reference."]
-    .concat(res.warnings || []).join("
-"));
+    .concat(res.warnings || []).join("\n"));
 };
 
 // Changing orientation invalidates the corners and the reference, so the
@@ -266,9 +265,7 @@ $("btnSaveOrient").onclick = async () => {
   refresh();
   const notes = res.warnings || [];
   alert(notes.length
-    ? "Orientation applied.
-" + notes.join("
-")
+    ? "Orientation applied.\n" + notes.join("\n")
     : "Orientation applied.");
 };
 
