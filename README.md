@@ -80,7 +80,18 @@ scratch, sets it up, and hands you a working service:
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Niiikoc/Klipper_Bed_Check/main/proxmox/create-lxc.sh)"
 ```
 
-With a pre-filled config, so that no manual editing is needed at all:
+It opens a whiptail menu: **Default settings** takes the next free CTID and
+sensible resources, **Advanced settings** walks through ID, hostname, cores,
+RAM, disk, storage, network, root password, arbiter, port, and optionally
+pre-fills `config.yaml`. Every step then reports progress, and the two long
+downloads (torch, CLIP weights) show how much has actually landed so far.
+
+The whole run is logged to `/var/log/bed-check-lxc.log` on the node, and the
+in-container part to `/var/log/bed-check-install.log`. If a step fails, the
+script prints which step, the command, and the tail of the log — plus how to
+inspect or remove the half-built container.
+
+To skip the menu entirely, pass `-y` and the flags you want:
 
 ```bash
 ./create-lxc.sh -y \
@@ -98,15 +109,13 @@ storages are detected on their own.
 --ctid 210 --hostname bedcheck        # specific ID/name
 --ip 192.168.1.60/24 --gw 192.168.1.1 # static network
 --ram 4096 --disk 16 --cores 4        # resources
---local /root/bed-check               # from a local copy, without git
+--local /root/Klipper_Bed_Check       # from a local copy, without git
 --no-arbiter                          # classical CV only
 ```
 
-`--local` is useful for testing it **before** pushing to GitHub: `scp -r` the
-folder onto the node and point at it.
-
-If something breaks halfway through, the script tells you exactly how to clean
-up the half-built container.
+`--local` installs from a directory already on the node instead of cloning:
+`scp -r` the folder over and point at it. Useful for testing a change before
+pushing, and the only option if you keep the repo private.
 
 <details>
 <summary>Manual installation (Pi, existing LXC, any Debian)</summary>
@@ -290,3 +299,9 @@ exclude zones, the exact gcode that reaches Klipper, staying silent during a
 print, resynchronising after a `FIRMWARE_RESTART`, and the arbiter safeguards.
 
 `test_arbiter.py` downloads CLIP (~600MB) the first time.
+
+`test_ui_sync.py` covers the installers instead of the detector. `install.sh`
+sources `lib/ui.sh`; `proxmox/create-lxc.sh` cannot, because it is executed
+straight from `curl`, so it carries an inlined copy between markers. The test
+fails if the two drift — run `python tools/sync-ui.py` after editing
+`lib/ui.sh` and it re-splices them.
