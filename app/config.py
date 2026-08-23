@@ -25,7 +25,15 @@ PRINTER_DEFAULTS: dict[str, Any] = {
         "edge_margin_mm": 8.0,
         "exclude_zones_mm": [],
     },
-    "capture": {"frames": 5, "frame_delay_s": 0.15, "timeout_s": 5.0},
+    "capture": {
+        "frames": 5,
+        "frame_delay_s": 0.15,
+        "timeout_s": 5.0,
+        # Applied before anything else looks at the frame, so the corners,
+        # the reference and the live checks all agree on which way is up.
+        "rotate": 0,        # 0 | 90 | 180 | 270, clockwise
+        "flip": "",         # "" | "h" | "v"
+    },
     "detect": {
         "z_threshold": 6.0,
         "min_area_mm2": 100.0,
@@ -42,6 +50,16 @@ PRINTER_DEFAULTS: dict[str, Any] = {
         "adapt": True,
         "adapt_decay": 0.98,
         "history": 40,
+        # Skip the full CV pass while the bed looks untouched. The trigger is
+        # derived from detect.min_area_mm2, so the gate cannot hide anything
+        # the detector itself would have reported.
+        "change_gate": True,
+        "change_delta": 8,      # grey levels a thumbnail pixel must move
+        "max_skip_s": 60.0,     # never coast longer than this without a check
+        # Seconds of life handed to Klipper with every publish, so a watcher
+        # that dies expires its own state instead of leaving a stale "clear".
+        # 0 = auto, three heartbeats.
+        "state_ttl_s": 0.0,
     },
 }
 

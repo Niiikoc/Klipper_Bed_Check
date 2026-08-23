@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -9,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
-from . import arbiter, config
+from . import arbiter, config, geometry
 from .service import PrinterService
 
 logging.basicConfig(
@@ -140,9 +141,49 @@ def printer_config(name: str):
 @app.patch("/api/printers/{name}/config")
 def patch_printer_config(name: str, patch: dict = Body(...)):
     try:
-        return config.update_printer(name, patch)
+        before = config.printer(config.load(), name)
     except KeyError:
         raise HTTPException(404, f"unknown printer '{name}'")
+
+    patch = copy.deepcopy(patch)
+    warnings: list[str] = []
+
+    # Rotating or flipping moves every pixel, so corners clicked in the old
+    # orientation and the reference learned from it are both meaningless.
+    # Keeping them would warp through a quad that no longer matches the image
+    # and silently produce nonsense, so drop both and say so.
+    cap = patch.get("capture") or {}
+    old_cap = before.get("capture") or {}
+    reoriented = any(
+        key in cap and str(cap[key]) != str(old_cap.get(key, ""))
+        for key in ("rotate", "flip")
+    )
+    if reoriented:
+        svc = service(name)
+        if before["geometry"].get("corners_px"):
+            patch.setdefault("geometry", {})["corners_px"] = None
+            warnings.append("corners cleared - recalibrate them")
+        if svc.has_reference():
+            try:
+                os.remove(svc.model_path())
+                warnings.append("reference discarded - capture a new one")
+            except OSError as exc:
+                log.warning("could not remove stale reference: %s", exc)
+
+    # Normalise here as well as in geometry.homography so the stored order is
+    # the canonical one and the UI redraws the dots the way they are used.
+    geom = patch.get("geometry") or {}
+    if geom.get("corners_px"):
+        try:
+            geom["corners_px"] = geometry.order_corners(geom["corners_px"]).tolist()
+        except geometry.GeometryError as exc:
+            raise HTTPException(400, str(exc))
+
+    try:
+        updated = config.update_printer(name, patch)
+    except KeyError:
+        raise HTTPException(404, f"unknown printer '{name}'")
+    return {**updated, "warnings": warnings}
 
 
 @app.get("/api/printers/{name}/status")

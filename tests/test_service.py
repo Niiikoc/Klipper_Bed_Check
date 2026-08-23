@@ -27,7 +27,7 @@ STATE = {
     "printer_state": "standby",
     "position": [10.0, 10.0, 30.0, 0.0],
     "homed_axes": "xyz",
-    "macro": {"valid": 0, "occupied": 0, "area": 0.0},
+    "macro": {"valid": 0, "occupied": 0, "area": 0.0, "ttl": 0},
     "scripts": [],
 }
 
@@ -247,7 +247,7 @@ printers:
           f"{len(STATE['scripts'])} scripts")
 
     # Klipper restarted: variables reset, watcher must notice and re-push.
-    STATE["macro"] = {"valid": 0, "occupied": 0, "area": 0.0}
+    STATE["macro"] = {"valid": 0, "occupied": 0, "area": 0.0, "ttl": 0}
     STATE["scripts"].clear()
     service("rig").watch_tick()
     check("re-publishes after klipper restart",
@@ -259,6 +259,46 @@ printers:
     service("rig").watch_tick()
     check("clearing bed -> occupied=0",
           STATE["macro"]["occupied"] == 0 and STATE["macro"]["valid"] == 1)
+
+    # Freshness: a dead watcher must not leave a stale "clear" behind, so
+    # every publish refills the countdown BED_CHECK_WATCHDOG ticks down.
+    check("publish refills the klipper watchdog ttl",
+          STATE["macro"]["ttl"] > 0, f"ttl={STATE['macro']['ttl']}s")
+
+    svc = service("rig")
+
+    # Change gate: an untouched bed must not cost a full CV pass.
+    STATE["scripts"].clear()
+    out = svc.watch_tick()
+    check("unchanged scene -> gate skips the pipeline",
+          out.get("skipped") is not None and out["verdict"] == "clear",
+          out.get("skipped", "ran the full pipeline"))
+
+    # ...but the heartbeat still has to reach Klipper, or the watchdog would
+    # expire a state that is merely unchanged.
+    svc._published_at = 0.0
+    STATE["scripts"].clear()
+    svc.watch_tick()
+    check("skipped tick still heartbeats",
+          any("VARIABLE=ttl" in s for s in STATE["scripts"]),
+          f"{len(STATE['scripts'])} scripts")
+
+    # A part appearing has to break through the gate.
+    STATE["scene"] = "object"
+    out = svc.watch_tick()
+    check("new object breaks through the gate",
+          out["verdict"] == "occupied" and out.get("skipped") is None,
+          f"area={out.get('area_mm2')}mm2")
+
+    # Safety valve: never coast past max_skip_s even if nothing looks different.
+    svc.watch_tick()               # settle, so the baseline matches the scene
+    svc._thumb_at = 0.0            # pretend the last real check was long ago
+    out = svc.watch_tick()
+    check("max_skip_s forces a real check", out.get("skipped") is None,
+          "full pipeline ran")
+
+    STATE["scene"] = "clear"
+    svc.watch_tick()
 
     # Mid-print the watcher must not touch the gcode queue at all.
     STATE["printer_state"] = "printing"
