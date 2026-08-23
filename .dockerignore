@@ -1,0 +1,8 @@
+.venv/
+data/
+config/
+tests/
+.git/
+__pycache__/
+*.pyc
+README.md

@@ -1,0 +1,16 @@
+services:
+  bed-check:
+    build:
+      context: .
+      args:
+        WITH_ARBITER: "true"
+    image: bed-check:latest
+    container_name: bed-check
+    restart: unless-stopped
+    ports:
+      - "8790:8790"
+    volumes:
+      - ./config:/config
+      - ./data:/data
+    environment:
+      TZ: Europe/Athens

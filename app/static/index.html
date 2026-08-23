@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>bed-check</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#171a21; --line:#262b35; --fg:#e6e9ef; --dim:#98a1b3;
+    --ok:#2ea043; --bad:#e5484d; --warn:#e2a336; --accent:#4c8dff;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f4f6fa; --panel:#fff; --line:#dfe3ea; --fg:#1b1f27; --dim:#5d6675; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.5 ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif; }
+  header { display:flex; align-items:center; gap:16px; padding:14px 20px;
+           border-bottom:1px solid var(--line); background:var(--panel); }
+  h1 { font-size:16px; margin:0; letter-spacing:.3px; }
+  select, button, input { font:inherit; color:var(--fg); background:var(--bg);
+           border:1px solid var(--line); border-radius:8px; padding:6px 10px; }
+  button { cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { border-color:var(--bad); color:var(--bad); }
+  main { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr));
+         gap:16px; padding:16px; align-items:start; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+          padding:14px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em;
+             color:var(--dim); margin:0 0 12px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .row + .row { margin-top:10px; }
+  label { color:var(--dim); font-size:12px; }
+  input[type=number] { width:88px; }
+  img.frame { width:100%; border-radius:8px; display:block; background:#000; }
+  .wrap { position:relative; }
+  .dot { position:absolute; width:16px; height:16px; margin:-8px 0 0 -8px;
+         border:2px solid var(--accent); border-radius:50%; background:#0008;
+         color:#fff; font-size:10px; text-align:center; line-height:12px;
+         pointer-events:none; }
+  .badge { display:inline-block; padding:3px 10px; border-radius:999px;
+           font-weight:600; font-size:12px; letter-spacing:.04em; }
+  .badge.clear { background:var(--ok); color:#fff; }
+  .badge.occupied { background:var(--bad); color:#fff; }
+  .badge.unknown, .badge.skipped { background:var(--warn); color:#3a2a00; }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; font-size:13px; }
+  .kv dt { color:var(--dim); }
+  .kv dd { margin:0; font-variant-numeric:tabular-nums; }
+  .hist { display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; }
+  .hist figure { margin:0; flex:0 0 150px; }
+  .hist img { width:100%; border-radius:6px; display:block; }
+  .hist figcaption { font-size:11px; color:var(--dim); margin-top:4px; }
+  pre { background:var(--bg); border:1px solid var(--line); border-radius:8px;
+        padding:10px; overflow:auto; font-size:12px; margin:10px 0 0; }
+  .hint { color:var(--dim); font-size:12px; margin:8px 0 0; }
+  .full { grid-column:1/-1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>bed-check</h1>
+  <select id="printer"></select>
+  <span id="verdict" class="badge unknown">—</span>
+  <span id="reason" style="color:var(--dim)"></span>
+  <span style="flex:1"></span>
+  <span id="arb" class="hint"></span>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Status</h2>
+    <dl class="kv" id="status"></dl>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="btnCheck">Check now</button>
+      <button id="btnPublish">Push to Klipper</button>
+    </div>
+    <img class="frame" id="lastImg" style="margin-top:12px" alt="">
+  </section>
+
+  <section class="card">
+    <h2>1 &middot; Corner calibration</h2>
+    <p class="hint">Click the 4 bed corners in this order:
+       top-left &rarr; top-right &rarr; bottom-right &rarr; bottom-left.</p>
+    <div class="wrap" id="calWrap">
+      <img class="frame" id="snap" alt="">
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label>Bed X</label><input type="number" id="bedX" step="1">
+      <label>Bed Y</label><input type="number" id="bedY" step="1">
+      <label>px/mm</label><input type="number" id="ppm" step="0.1">
+    </div>
+    <div class="row">
+      <label>Margin</label><input type="number" id="margin" step="1">
+      <button id="btnReset">Clear corners</button>
+      <button class="primary" id="btnSaveGeom">Save</button>
+      <button id="btnRefresh">New snapshot</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>2 &middot; Top-down preview</h2>
+    <img class="frame" id="warp" alt="">
+    <p class="hint">Shaded areas are ignored. The numbers are bed mm &mdash;
+       use them for <code>exclude_zones_mm</code>.</p>
+  </section>
+
+  <section class="card">
+    <h2>3 &middot; Empty-bed reference</h2>
+    <p class="hint">Clear the bed completely. Use <b>Append</b> to add captures under
+       other lighting &mdash; sigma widens only where the scene really varies.</p>
+    <div class="row">
+      <label>Captures</label><input type="number" id="refN" value="12" min="3" max="60">
+      <button class="primary" id="btnRefReset">New reference</button>
+      <button id="btnRefAppend">Append</button>
+    </div>
+    <pre id="refOut" hidden></pre>
+  </section>
+
+  <section class="card">
+    <h2>4 &middot; Thresholds</h2>
+    <div class="row">
+      <label>z_threshold</label><input type="number" id="zthr" step="0.1">
+      <label>min_area_mm&sup2;</label><input type="number" id="minarea" step="10">
+    </div>
+    <div class="row">
+      <label>confirm_delay_s</label><input type="number" id="cdelay" step="0.1">
+      <button class="primary" id="btnSaveDetect">Save</button>
+    </div>
+    <div class="row">
+      <label>Tune rounds</label><input type="number" id="tuneN" value="15" min="3" max="60">
+      <button id="btnTune">Measure noise floor</button>
+      <button id="btnApplyTune" hidden>Apply suggestions</button>
+    </div>
+    <pre id="tuneOut" hidden></pre>
+  </section>
+
+  <section class="card full">
+    <h2>History</h2>
+    <div class="hist" id="hist"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let current = null, corners = [], cfg = null;
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.text()) || r.statusText);
+  return r.json();
+}
+const bust = () => "?t=" + Date.now();
+
+async function loadPrinters() {
+  const list = await api("/api/printers");
+  $("printer").innerHTML = list.map(p =>
+    `<option value="${p.name}">${p.name}</option>`).join("");
+  if (!current && list.length) current = list[0].name;
+  $("printer").value = current;
+  const h = await api("/api/health");
+  $("arb").textContent = h.arbiter_available
+    ? "CLIP arbiter: active" : "CLIP arbiter: not present in this image";
+}
+
+async function loadConfig() {
+  cfg = await api(`/api/printers/${current}/config`);
+  const g = cfg.geometry, d = cfg.detect;
+  $("bedX").value = g.bed_size_mm[0];
+  $("bedY").value = g.bed_size_mm[1];
+  $("ppm").value = g.px_per_mm;
+  $("margin").value = g.edge_margin_mm;
+  $("zthr").value = d.z_threshold;
+  $("minarea").value = d.min_area_mm2;
+  $("cdelay").value = d.confirm_delay_s;
+  corners = g.corners_px ? g.corners_px.slice() : [];
+  drawDots();
+}
+
+function refreshImages() {
+  $("snap").src = `/api/printers/${current}/snapshot.jpg${bust()}`;
+  $("warp").src = `/api/printers/${current}/warp.jpg${bust()}`;
+}
+
+function drawDots() {
+  const wrap = $("calWrap"), img = $("snap");
+  wrap.querySelectorAll(".dot").forEach(d => d.remove());
+  if (!img.naturalWidth) return;
+  const sx = img.clientWidth / img.naturalWidth;
+  const sy = img.clientHeight / img.naturalHeight;
+  corners.forEach(([x, y], i) => {
+    const d = document.createElement("div");
+    d.className = "dot";
+    d.style.left = (x * sx) + "px";
+    d.style.top = (y * sy) + "px";
+    d.textContent = i + 1;
+    wrap.appendChild(d);
+  });
+}
+
+$("snap").addEventListener("load", drawDots);
+window.addEventListener("resize", drawDots);
+
+$("snap").addEventListener("click", (e) => {
+  const img = $("snap"), r = img.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width * img.naturalWidth;
+  const y = (e.clientY - r.top) / r.height * img.naturalHeight;
+  if (corners.length >= 4) corners = [];
+  corners.push([Math.round(x), Math.round(y)]);
+  drawDots();
+});
+
+$("btnReset").onclick = () => { corners = []; drawDots(); };
+$("btnRefresh").onclick = refreshImages;
+
+$("btnSaveGeom").onclick = async () => {
+  const patch = { geometry: {
+    bed_size_mm: [+$("bedX").value, +$("bedY").value],
+    px_per_mm: +$("ppm").value,
+    edge_margin_mm: +$("margin").value,
+  }};
+  if (corners.length === 4) patch.geometry.corners_px = corners;
+  await api(`/api/printers/${current}/config`, {
+    method: "PATCH", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(patch),
+  });
+  await loadConfig();
+  refreshImages();
+  alert("Saved. If you changed the corners or px_per_mm, rebuild the reference.");
+};
+
+$("btnSaveDetect").onclick = async () => {
+  await api(`/api/printers/${current}/config`, {
+    method: "PATCH", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ detect: {
+      z_threshold: +$("zthr").value,
+      min_area_mm2: +$("minarea").value,
+      confirm_delay_s: +$("cdelay").value,
+    }}),
+  });
+  await loadConfig();
+};
+
+async function buildRef(mode) {
+  const n = +$("refN").value;
+  const btn = mode === "reset" ? $("btnRefReset") : $("btnRefAppend");
+  btn.disabled = true; btn.textContent = "Capturing…";
+  try {
+    const out = await api(
+      `/api/printers/${current}/reference?captures=${n}&mode=${mode}`,
+      { method: "POST" });
+    $("refOut").hidden = false;
+    $("refOut").textContent = JSON.stringify(out, null, 2);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = mode === "reset" ? "New reference" : "Append";
+    refresh();
+  }
+}
+$("btnRefReset").onclick = () => buildRef("reset");
+$("btnRefAppend").onclick = () => buildRef("append");
+
+$("btnCheck").onclick = async () => {
+  $("btnCheck").disabled = true;
+  try { showLast(await api(`/api/printers/${current}/check`, {method:"POST"})); }
+  finally { $("btnCheck").disabled = false; loadHistory(); }
+};
+
+$("btnPublish").onclick = async () => {
+  showLast(await api(`/api/printers/${current}/publish`, {method:"POST"}));
+};
+
+let tuneSuggestion = null;
+$("btnTune").onclick = async () => {
+  $("btnTune").disabled = true; $("btnTune").textContent = "Measuring…";
+  try {
+    const out = await api(
+      `/api/printers/${current}/tune?rounds=${+$("tuneN").value}`,
+      { method: "POST" });
+    tuneSuggestion = out.suggested;
+    $("tuneOut").hidden = false;
+    $("tuneOut").textContent = JSON.stringify(out, null, 2);
+    $("btnApplyTune").hidden = false;
+  } catch (e) { alert(e.message); }
+  finally { $("btnTune").disabled = false; $("btnTune").textContent = "Measure noise floor"; }
+};
+
+$("btnApplyTune").onclick = async () => {
+  if (!tuneSuggestion) return;
+  $("zthr").value = tuneSuggestion.z_threshold;
+  $("minarea").value = tuneSuggestion.min_area_mm2;
+  await $("btnSaveDetect").onclick();
+};
+
+function showLast(last) {
+  const v = last && last.verdict ? last.verdict : "unknown";
+  $("verdict").className = "badge " + v;
+  $("verdict").textContent = v;
+  $("reason").textContent = last && last.reason ? last.reason : "";
+  if (last && last.image) {
+    $("lastImg").src = `/api/printers/${current}/image/${last.image}${bust()}`;
+    $("lastImg").hidden = false;
+  }
+}
+
+async function refresh() {
+  if (!current) return;
+  const s = await api(`/api/printers/${current}/status`);
+  const last = s.last || {};
+  showLast(last);
+  const rows = {
+    "Reference": s.has_reference ? "yes" : "NO — build it",
+    "Corners": s.calibrated ? "yes" : "NO — calibrate",
+    "Machine pose": s.pose_ok ? "valid" : s.pose_reason,
+    "State": (s.pose.state || "?"),
+    "Largest blob": (last.area_mm2 ?? 0) + " mm²",
+    "max z": (last.max_z ?? 0),
+    "Duration": (last.took_s ?? 0) + " s",
+  };
+  if (last.arbiter && last.arbiter.ran)
+    rows["CLIP P(occupied)"] = last.arbiter.p_occupied.toFixed(3);
+  $("status").innerHTML = Object.entries(rows)
+    .map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+}
+
+async function loadHistory() {
+  const items = await api(`/api/printers/${current}/history?limit=20`);
+  $("hist").innerHTML = items.filter(i => i.image).map(i => `
+    <figure>
+      <img src="/api/printers/${current}/image/${i.image}" loading="lazy">
+      <figcaption>${new Date(i.at * 1000).toLocaleTimeString()} · ${i.verdict}</figcaption>
+    </figure>`).join("");
+}
+
+$("printer").onchange = async (e) => {
+  current = e.target.value;
+  await loadConfig(); refreshImages(); refresh(); loadHistory();
+};
+
+(async function init() {
+  await loadPrinters();
+  await loadConfig();
+  refreshImages();
+  refresh();
+  loadHistory();
+  setInterval(refresh, 4000);
+  setInterval(loadHistory, 20000);
+})();
+</script>
+</body>
+</html>
