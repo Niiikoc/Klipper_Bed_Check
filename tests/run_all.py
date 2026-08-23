@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODULES = ["test_pipeline.py", "test_service.py", "test_arbiter.py"]
+MODULES = ["test_ui_sync.py", "test_pipeline.py", "test_service.py", "test_arbiter.py"]
 
 failed = []
 for mod in MODULES:
