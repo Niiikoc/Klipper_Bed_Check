@@ -53,6 +53,12 @@ printers:
       frames: 5            # median stack -> cancels sensor noise
       frame_delay_s: 0.15
       timeout_s: 5
+      # Applied to every frame before anything else looks at it. Rotate until
+      # the bed sits square in the preview with the printer origin top-left,
+      # THEN click the corners. Changing either afterwards clears the corners
+      # and the reference, because both are tied to the old orientation.
+      rotate: 0            # 0 | 90 | 180 | 270, clockwise
+      flip: ""             # "" | h | v
 
     detect:
       z_threshold: 6.0     # sigma above the reference model
@@ -74,4 +80,15 @@ printers:
       heartbeat_s: 120.0   # resend the value at least this often
       adapt: true          # slow adaptation to PEI wear and stains
       adapt_decay: 0.98
-      history: 40
+      history: 40          # debug jpegs kept on disk, older ones deleted
+      # Skip the full CV pass while the bed looks untouched: one frame, warped
+      # and shrunk to 2mm per pixel, compared against the last verified check.
+      # The trigger is a quarter of min_area_mm2, so the gate cannot hide
+      # anything the detector would have reported.
+      change_gate: true
+      change_delta: 8      # grey levels a thumbnail pixel must move to count
+      max_skip_s: 60.0     # never coast longer than this without a real check
+      # Seconds of life handed to Klipper on every publish. BED_CHECK_WATCHDOG
+      # counts it down, so a watcher that dies expires its own state instead
+      # of leaving a stale "clear" the gate would trust forever.
+      state_ttl_s: 0.0     # 0 = auto, three heartbeats

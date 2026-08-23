@@ -75,10 +75,14 @@ class Moonraker:
         return out
 
     def publish(self, macro: str, valid: bool, occupied: bool,
-                area_mm2: float) -> None:
+                area_mm2: float, ttl_s: float = 0.0) -> None:
         script = "\n".join([
             f"SET_GCODE_VARIABLE MACRO={macro} VARIABLE=valid VALUE={int(valid)}",
             f"SET_GCODE_VARIABLE MACRO={macro} VARIABLE=occupied VALUE={int(occupied)}",
             f"SET_GCODE_VARIABLE MACRO={macro} VARIABLE=area VALUE={area_mm2:.1f}",
+            # Refills the countdown that BED_CHECK_WATCHDOG in bed_check.cfg
+            # ticks down. Klipper macros have no wall clock, so freshness has
+            # to be a counter that Klipper decrements for itself.
+            f"SET_GCODE_VARIABLE MACRO={macro} VARIABLE=ttl VALUE={ttl_s:.0f}",
         ])
         self._post("/printer/gcode/script", {"script": script})

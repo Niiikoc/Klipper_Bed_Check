@@ -40,6 +40,22 @@ macro is running, it blocks on the gcode mutex. The watcher writes the state
 **while the printer is idle**, and `PRINT_START` just reads a value that is
 already there: zero delay, zero deadlock.
 
+**Why it polls rather than reacting to events.** The dangerous sequence has no
+Klipper event in it at all: a print finishes, someone puts a part back on the
+bed by hand, someone starts the next print. Only polling makes the value
+trustworthy at an arbitrary moment. What polling does not have to be is
+expensive — a **change gate** grabs one frame, warps it and shrinks it to 2mm
+per pixel, and only runs the real pipeline when the bed has visibly moved.
+That is ~170x cheaper per tick, and the trigger is derived from
+`min_area_mm2`, so it cannot skip past anything the detector would have found.
+A `max_skip_s` ceiling means it never coasts indefinitely.
+
+**Freshness.** Klipper macros have no wall clock, so a watcher that dies would
+otherwise leave its last values frozen — and a stale `clear` looks exactly
+like a fresh one. Every publish therefore refills a `ttl` counter, and the
+`BED_CHECK_WATCHDOG` delayed_gcode in `bed_check.cfg` counts it down and sets
+`valid: 0` when the refills stop.
+
 ### What the CV does
 - **Perspective rectification** to a top-down view, so the thresholds are in
   real mm² and not in pixels.
@@ -222,17 +238,22 @@ Ideally add a fixed LED that is always on.
 
 ## Setup from the web UI
 
-1. **Corners** — click the 4 bed corners in the order TL → TR → BR → BL. Enter
-   the bed size and press Save.
-2. **Preview** — the bed must look rectangular and fill the frame. The grid is
+1. **Orientation** — if the camera is mounted sideways or upside down, set
+   Rotate/Flip first and press Apply. Rotate until the bed sits square in the
+   preview with the printer's origin at the top left. Changing this later
+   clears the corners and the reference, since both are tied to the old
+   orientation.
+2. **Corners** — click the 4 bed corners. Any order works; they are sorted into
+   place. Enter the bed size and press Save.
+3. **Preview** — the bed must look rectangular and fill the frame. The grid is
    in mm; use it for `exclude_zones_mm` if you want to ignore clips or the
    toolhead parking position.
-3. **Reference** — clear the bed **completely** and press "New reference".
+4. **Reference** — clear the bed **completely** and press "New reference".
    Later, with **Append**, add captures under other lighting conditions (e.g.
    midday and night) — sigma widens exactly where the scene really changes.
-4. **Tune** — with an empty bed press "Measure noise floor". It suggests
+5. **Tune** — with an empty bed press "Measure noise floor". It suggests
    thresholds from measured noise instead of guesswork. Press "Apply".
-5. **Test it** — put a part on the bed, press "Check now", look at the debug
+6. **Test it** — put a part on the bed, press "Check now", look at the debug
    image. Repeat with small and dark objects.
 
 ### Calibrating the arbiter
@@ -267,6 +288,10 @@ variable_on_unknown: 'abort'
 | `pose_gate.park_xy` | null | Accept a measurement only with the toolhead here. **Required on a bedslinger**, where the bed's Y position changes the frame. |
 | `watch.adapt` | true | Slow adaptation to PEI wear and stains. |
 | `watch.interval_s` | 5 | Check frequency while the printer is idle. |
+| `watch.history` | 40 | Debug jpegs kept on disk (~65KB each). Older ones are deleted, so the footprint is bounded. |
+| `watch.change_gate` | true | Skip the full CV pass while the bed looks untouched. ~170x cheaper per tick. |
+| `watch.max_skip_s` | 60 | Upper bound on how long the gate may coast before forcing a real check. |
+| `watch.state_ttl_s` | 0 (auto) | Seconds of life given to the Klipper state. 0 means three heartbeats. |
 
 **Rebuild the reference** whenever you change the build plate, move the camera,
 or change `px_per_mm` / the corners.
@@ -281,6 +306,8 @@ or change `px_per_mm` / the corners.
 | False alarms at night | Auto-exposure is on. Lock it, and `Append` a reference under the night-time conditions. |
 | Dark parts on dark PEI are missed | Raise `px_per_mm` to 3.0 and rebuild the reference. |
 | A flag always in the same spot | The toolhead parking position is in the frame — add that area to `exclude_zones_mm`. |
+| Black diagonal band across the warped view | The four corners form a self-intersecting quad, so the warp folds over itself. Fixed automatically now — the corners are sorted before use; re-save them if an old config still looks wrong. |
+| Bed appears rotated or mirrored in the preview | Set `capture.rotate` / `capture.flip`, then recalibrate the corners and rebuild the reference. |
 | CLIP overrides correct detections | Lower `confirm_threshold`, or set `arbiter.enabled: false`. The area rail already covers you for large parts. |
 
 ---

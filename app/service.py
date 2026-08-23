@@ -9,10 +9,16 @@ import uuid
 from collections import deque
 
 import cv2
+import numpy as np
 
 from . import arbiter, camera, config, detect, geometry
 from .model import BackgroundModel, ModelError
 from .moonraker import IDLE_STATES, Moonraker, MoonrakerError
+
+# Change-detection thumbnails are built at this resolution: one pixel per 2mm
+# of bed. Fine enough to see anything near min_area_mm2, coarse enough that the
+# comparison is free.
+THUMB_PX_PER_MM = 0.5
 
 log = logging.getLogger("bedcheck.service")
 
@@ -29,6 +35,13 @@ class PrinterService:
         }
         self._published: tuple | None = None
         self._published_at = 0.0
+        # Thumbnail of the bed as it looked at the last *full* check, plus
+        # when that was. Comparing against the last verified state rather than
+        # against the previous tick is what stops a slow change - a part eased
+        # down over ten seconds, or light drifting - from creeping past the
+        # gate one imperceptible step at a time.
+        self._thumb = None
+        self._thumb_at = 0.0
 
     # ------------------------------------------------------------ helpers
     @property
@@ -49,21 +62,24 @@ class PrinterService:
         cfg = cfg or self.cfg
         return Moonraker(cfg["moonraker_url"], cfg.get("moonraker_api_key"))
 
+    def _grab(self, cfg: dict, frames: int, delay: float):
+        cap = cfg["capture"]
+        return camera.grab(cfg["snapshot_url"], frames, delay, cap["timeout_s"],
+                           cap.get("rotate", 0), cap.get("flip", ""))
+
     def _grab_warped(self, cfg: dict):
         cap = cfg["capture"]
-        raw = camera.grab(cfg["snapshot_url"], cap["frames"],
-                          cap["frame_delay_s"], cap["timeout_s"])
+        raw = self._grab(cfg, cap["frames"], cap["frame_delay_s"])
         return raw, geometry.warp(raw, cfg["geometry"])
 
     # -------------------------------------------------------- calibration
     def snapshot_jpg(self) -> bytes:
         cfg = self.cfg
-        raw = camera.grab(cfg["snapshot_url"], 1, 0, cfg["capture"]["timeout_s"])
-        return camera.encode_jpg(raw)
+        return camera.encode_jpg(self._grab(cfg, 1, 0))
 
     def warp_jpg(self, grid: bool = True) -> bytes:
         cfg = self.cfg
-        raw = camera.grab(cfg["snapshot_url"], 1, 0, cfg["capture"]["timeout_s"])
+        raw = self._grab(cfg, 1, 0)
         warped = geometry.warp(raw, cfg["geometry"])
         if grid:
             m = geometry.mask(cfg["geometry"])
@@ -282,6 +298,45 @@ class PrinterService:
         }
 
     # --------------------------------------------------------------- watch
+    def _thumbnail(self, cfg: dict):
+        """A cheap, geometry-aware view of the bed, for change detection only.
+
+        One frame instead of the median stack, warped so the threshold can be
+        stated in bed mm2, then shrunk until a pixel covers ~2mm. Costs a few
+        milliseconds against roughly a quarter second for the real pipeline.
+        """
+        warped = geometry.warp(self._grab(cfg, 1, 0), cfg["geometry"])
+        scale = THUMB_PX_PER_MM / float(cfg["geometry"]["px_per_mm"])
+        small = cv2.resize(warped, None, fx=scale, fy=scale,
+                           interpolation=cv2.INTER_AREA)
+        return cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (3, 3), 0)
+
+    def _scene_changed(self, cfg: dict):
+        """(changed, why, thumbnail) - whether the full pipeline needs to run."""
+        w = cfg["watch"]
+        try:
+            thumb = self._thumbnail(cfg)
+        except Exception as exc:
+            # If even a single frame cannot be had, let the full path run and
+            # report the failure properly instead of silently coasting.
+            self._thumb = None
+            return True, f"preview failed: {exc}", None
+
+        if self._thumb is None or self._thumb.shape != thumb.shape:
+            return True, "no baseline", thumb
+        if time.time() - self._thumb_at > float(w.get("max_skip_s", 60.0)):
+            return True, "max_skip_s elapsed", thumb
+
+        delta = int(w.get("change_delta", 8))
+        moved_px = int(np.count_nonzero(cv2.absdiff(thumb, self._thumb) > delta))
+        moved_mm2 = moved_px / (THUMB_PX_PER_MM ** 2)
+        # A quarter of the smallest blob the detector would report: a wide
+        # margin, so the gate errs towards doing the work.
+        trigger = 0.25 * float(cfg["detect"]["min_area_mm2"])
+        if moved_mm2 >= trigger:
+            return True, f"{moved_mm2:.0f}mm2 moved", thumb
+        return False, f"{moved_mm2:.0f}mm2 moved (under {trigger:.0f})", thumb
+
     def watch_tick(self) -> dict:
         cfg = self.cfg
         macro = cfg["macro"]
@@ -305,12 +360,28 @@ class PrinterService:
                          "at": time.time()}
             return self.last
 
+        thumb = None
+        if bool(cfg["watch"].get("change_gate", True)):
+            changed, why, thumb = self._scene_changed(cfg)
+            if not changed and self.last.get("verdict") in ("clear", "occupied"):
+                # Nothing moved since the last real check, so its verdict still
+                # stands. Publish anyway: _publish only reaches Klipper when
+                # something differs or the heartbeat is due, and that heartbeat
+                # is what stops the Klipper-side watchdog expiring the state.
+                self._publish(cfg, macro, True,
+                              self.last["verdict"] == "occupied",
+                              float(self.last.get("area_mm2") or 0.0), actual)
+                self.last = {**self.last, "at": time.time(), "skipped": why}
+                return self.last
+
         res = self.run_check(adapt=bool(cfg["watch"]["adapt"]))
         if res["verdict"] == "unknown":
             self._publish(cfg, macro, False, False, 0.0, actual)
         else:
             self._publish(cfg, macro, True, res["verdict"] == "occupied",
                           res["area_mm2"], actual)
+            if thumb is not None:
+                self._thumb, self._thumb_at = thumb, time.time()
         return res
 
     @staticmethod
@@ -334,8 +405,11 @@ class PrinterService:
         stale = (time.time() - self._published_at) > heartbeat
         if not stale and not self._needs_publish(desired, actual):
             return
+        # Three heartbeats of slack, so ordinary jitter never expires a state
+        # that is simply unchanged.
+        ttl = float(cfg["watch"].get("state_ttl_s") or 0.0) or 3.0 * heartbeat
         try:
-            self.moonraker(cfg).publish(macro, valid, occupied, area)
+            self.moonraker(cfg).publish(macro, valid, occupied, area, ttl)
             self._published = desired
             self._published_at = time.time()
         except MoonrakerError as exc:
