@@ -1,0 +1,77 @@
+# bed-check configuration
+# Copy this to config/config.yaml and adapt it.
+
+# The data directory comes from the container's BEDCHECK_DATA variable
+# (default /data), not from here.
+
+arbiter:
+  # CLIP runs ONLY when the classical CV stage raises a flag.
+  enabled: true
+  model: openai/clip-vit-base-patch32
+  # The arbiter OVERRIDES a detection only if P(occupied) falls below this,
+  # i.e. only when it is confident it is looking at an empty bed. Calibrate it
+  # by watching the real p values in the web UI - the default is conservative.
+  confirm_threshold: 0.25
+  # A blob larger than this is NEVER overridden: it cannot be a shadow.
+  max_override_area_mm2: 2000.0
+  # Minimum frame around the blob so CLIP has some context.
+  crop_context_mm: 70
+  prompts:
+    occupied:
+      - "a 3d printed plastic object sitting on a 3d printer bed"
+      - "a finished 3d printed part left on the print surface"
+      - "an object lying on a 3d printer build plate"
+    clear:
+      - "an empty 3d printer bed"
+      - "a clean empty print surface with nothing on it"
+      - "a bare textured build plate"
+
+printers:
+  - name: voron
+    enabled: true
+
+    snapshot_url: http://192.168.1.50/webcam/?action=snapshot
+    moonraker_url: http://192.168.1.50:7125
+    moonraker_api_key: null
+
+    # The Klipper gcode_macro that holds the state.
+    macro: BED_STATE
+
+    geometry:
+      bed_size_mm: [350, 350]
+      # The 4 bed corners in pixels of the RAW image, in this order:
+      # top-left, top-right, bottom-right, bottom-left, as seen by the
+      # camera. You click them with the mouse in the web UI.
+      corners_px: null
+      px_per_mm: 2.0
+      # Ignore a band around the perimeter (clips, rim).
+      edge_margin_mm: 8
+      # Extra zones to ignore, in bed mm: [x0, y0, x1, y1]
+      exclude_zones_mm: []
+
+    capture:
+      frames: 5            # median stack -> cancels sensor noise
+      frame_delay_s: 0.15
+      timeout_s: 5
+
+    detect:
+      z_threshold: 6.0     # sigma above the reference model
+      min_area_mm2: 100.0  # ~10x10mm, anything smaller is ignored
+      int_std_floor: 2.0
+      edge_std_floor: 3.0
+      chroma_std_floor: 1.5
+      noise_gain: 2.0     # tolerance for a camera that gets noisy (e.g. at night)
+      confirm_delay_s: 1.5 # second capture before calling it occupied
+
+    pose_gate:
+      # The check counts as valid only if the machine is in a known pose.
+      require_homed: false
+      park_xy: null        # e.g. [175, 350] - otherwise null
+      tolerance_mm: 5.0
+
+    watch:
+      interval_s: 5.0
+      heartbeat_s: 120.0   # resend the value at least this often
+      adapt: true          # slow adaptation to PEI wear and stains
+      adapt_decay: 0.98
+      history: 40

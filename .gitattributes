@@ -1,0 +1,10 @@
+# Developed on Windows, executed on Linux. Without this, git can hand out
+# CRLF on checkout and every shell script dies with:
+#   bad interpreter: /usr/bin/env bash^M
+* text=auto
+*.sh   text eol=lf
+*.py   text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.cfg  text eol=lf
+Dockerfile text eol=lf
